@@ -1,0 +1,27 @@
+{
+  "name": "figgo-runner",
+  "version": "1.0.0",
+  "description": "Local CLI workflow runner with persistent state and resume support",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "figgo-runner": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["cli", "workflow", "automation"],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "execa": "^9.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
