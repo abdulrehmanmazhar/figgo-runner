@@ -1,12 +1,10 @@
 # figgo-runner
 
-Local CLI for running step-based shell workflows with JSON state under `~/.figgo`, resume after failures, and optional idempotent `check` commands.
+Local workflow engine: run automation defined in an external folder (`workflow.json` + scripts). State and logs live under `~/.figgo`.
 
 ## Requirements
 
-- Node.js 20+ (LTS recommended)
-
-The bundled `scripts/*.sh` files are optional helpers for Linux/macOS; the `sample` workflow uses shell `echo` so it runs with the default OS shell.
+- Node.js 20+
 
 ## Setup
 
@@ -15,25 +13,51 @@ npm install
 npm run build
 ```
 
-## Usage
-
-From the project root (so `scripts/` resolves correctly):
+## Commands
 
 ```bash
-node dist/index.js run sample
+node dist/index.js inspect ./example-workflow
+node dist/index.js run ./example-workflow
+node dist/index.js list
+node dist/index.js history
 ```
 
-Options:
+`run` options:
 
-- `--reset` — clear saved state for the workflow and start fresh
-- `--verbose` — print full stdout/stderr from commands
-- `--no-prompt` — if a previous run is incomplete, resume without asking
+- `--reset` — clear saved state for that workflow directory and start fresh
+- `--verbose` — stream command output to the terminal
+- `--no-prompt` — skip interactive prompts (resume incomplete runs; on fingerprint mismatch, resets state)
 
-State file: `~/.figgo/workflows.json`  
-Logs: `~/.figgo/logs/<workflowId>-<timestamp>.log`
+## Workflow project layout
 
-The `data/` directory is created at runtime under the current working directory.
+```text
+my-workflow/
+  workflow.json
+  scripts/
+    ...
+```
+
+Commands in `workflow.json` run with **cwd = workflow directory**, so `bash ./scripts/setup.sh` resolves correctly.
+
+## State and fingerprint
+
+- State file: `~/.figgo/workflows.json` (atomic writes)
+- Keys are **SHA-256 fingerprints** of the workflow definition (name, version, description, steps), not display names
+- If you change `workflow.json`, the fingerprint changes. The runner detects another state entry for the same directory and asks whether to **carry forward matching step ids** or **reset**
+
+## History
+
+Each `run` appends a JSON file under `~/.figgo/history/` with timestamp, path, duration, success, optional `failedStep`, and `logsPath`.
+
+## Migration from earlier figgo-runner
+
+Older releases stored state keyed by workflow id strings (for example `"sample"`). On first load, that file is **backed up** to `~/.figgo/workflows.pre-v2-<timestamp>.bak.json` and state starts empty. Re-run workflows from their directories to recreate state.
 
 ## Example
 
-The `sample` workflow prints two steps, then fails on step 3. Run again and choose **Resume** (or use `--no-prompt`) to continue; use `--reset` to start over.
+See `example-workflow/`. From the repo root:
+
+```bash
+node dist/index.js inspect ./example-workflow
+node dist/index.js run ./example-workflow
+```

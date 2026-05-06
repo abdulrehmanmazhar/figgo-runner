@@ -1,0 +1,22 @@
+{
+  "name": "Example External Workflow",
+  "version": "1.0.0",
+  "description": "Demonstrates external workflow.json with resumable failure on the last step",
+  "steps": [
+    {
+      "id": "step1",
+      "description": "Print first step",
+      "run": "echo \"Running step 1\""
+    },
+    {
+      "id": "step2",
+      "description": "Print second step",
+      "run": "echo \"Running step 2\""
+    },
+    {
+      "id": "step3",
+      "description": "Fail to demonstrate resume and fingerprint prompts",
+      "run": "echo \"Running step 3 (will fail)\" && exit 1"
+    }
+  ]
+}

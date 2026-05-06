@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
-import { runWorkflow } from "./runner.js";
-import type { RunOptions } from "./types.js";
-import { getWorkflow, listWorkflowIds } from "./workflows/registry.js";
+import { cmdHistory, cmdInspect, cmdList } from "./cli/commands.js";
+import type { RunOptions } from "./core/types.js";
+import { WorkflowRunner } from "./core/workflow-runner.js";
+import { HistoryRepository } from "./storage/history-repository.js";
+import { StateRepository } from "./storage/state-repository.js";
+import { WorkflowFingerprintService } from "./workflow/workflow-fingerprint.js";
+import { WorkflowLoader } from "./workflow/workflow-loader.js";
 
-function parseArgs(argv: string[]): { command: string; workflowId?: string; options: RunOptions } {
+function parseRunOptions(argv: string[]): { rest: string[]; options: RunOptions } {
   const options: RunOptions = { reset: false, verbose: false, noPrompt: false };
-  const positional: string[] = [];
+  const rest: string[] = [];
   for (const arg of argv) {
     if (arg === "--reset") {
       options.reset = true;
@@ -18,35 +22,69 @@ function parseArgs(argv: string[]): { command: string; workflowId?: string; opti
       console.error(`Unknown option: ${arg}`);
       process.exit(2);
     } else {
-      positional.push(arg);
+      rest.push(arg);
     }
   }
-  const command = positional[0] ?? "";
-  const workflowId = positional[1];
-  return { command, workflowId, options };
+  return { rest, options };
+}
+
+function printUsage(): void {
+  console.error("Usage:");
+  console.error("  figgo-runner run <workflowDir> [--reset] [--verbose] [--no-prompt]");
+  console.error("  figgo-runner inspect <workflowDir>");
+  console.error("  figgo-runner list");
+  console.error("  figgo-runner history");
 }
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const { command, workflowId, options } = parseArgs(argv);
-
-  if (command !== "run" || workflowId === undefined || workflowId.length === 0) {
-    console.error("Usage: figgo-runner run <workflowId> [--reset] [--verbose] [--no-prompt]");
-    const ids = listWorkflowIds();
-    console.error(ids.length > 0 ? `Workflows: ${ids.join(", ")}` : "Workflows: (none registered)");
+  if (argv.length === 0) {
+    printUsage();
     process.exit(2);
   }
 
-  const workflow = getWorkflow(workflowId);
-  if (workflow === undefined) {
-    console.error(
-      `Unknown workflow "${workflowId}". Available: ${listWorkflowIds().join(", ") || "(none)"}`,
-    );
-    process.exit(1);
+  const command = argv[0];
+  if (command === "list") {
+    await cmdList();
+    return;
+  }
+  if (command === "history") {
+    await cmdHistory();
+    return;
   }
 
-  const exitCode = await runWorkflow(workflow, options, process.cwd());
-  process.exit(exitCode);
+  if (command === "inspect") {
+    const pathArg = argv[1];
+    if (pathArg === undefined || pathArg.length === 0) {
+      printUsage();
+      process.exit(2);
+    }
+    await cmdInspect(pathArg, process.cwd());
+    return;
+  }
+
+  if (command === "run") {
+    const { rest, options } = parseRunOptions(argv.slice(1));
+    const pathArg = rest[0];
+    if (pathArg === undefined || pathArg.length === 0) {
+      printUsage();
+      process.exit(2);
+    }
+
+    const runner = new WorkflowRunner(
+      new WorkflowLoader(),
+      new WorkflowFingerprintService(),
+      new StateRepository(),
+      new HistoryRepository(),
+    );
+    const code = await runner.run(pathArg, options, process.cwd());
+    process.exit(code);
+    return;
+  }
+
+  console.error(`Unknown command: ${command}`);
+  printUsage();
+  process.exit(2);
 }
 
 main().catch((err: unknown) => {

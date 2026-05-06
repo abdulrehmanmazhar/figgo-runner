@@ -13,6 +13,6 @@ export function getLogsDir(): string {
   return join(getFiggoDir(), "logs");
 }
 
-export function getDataDir(projectRoot: string): string {
-  return join(projectRoot, "data");
+export function getHistoryDir(): string {
+  return join(getFiggoDir(), "history");
 }
