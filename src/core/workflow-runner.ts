@@ -9,9 +9,19 @@ import {
   shouldOfferResume,
   StateRepository,
 } from "../storage/state-repository.js";
-import type { RunOptions, WorkflowDefinition } from "./types.js";
-import type { WorkflowStateEntry, WorkflowsStateFile } from "./types.js";
-import { execShell } from "../utils/exec.js";
+import type {
+  HistoryRecord,
+  RunOptions,
+  StepLogRecord,
+  WorkflowDefinition,
+  WorkflowStateEntry,
+  WorkflowsStateFile,
+  WorkflowStep,
+} from "./types.js";
+import { interpolateRecord, interpolateString } from "../interpolation/interpolator.js";
+import { evaluateWhen } from "../conditions/evaluator.js";
+import { buildExecutionGraph } from "../graph/dependency-graph.js";
+import { getExecutor } from "../executors/registry.js";
 import { resolveWorkflowDirectory } from "../utils/resolve-workflow-dir.js";
 import { WorkflowFingerprintService } from "../workflow/workflow-fingerprint.js";
 import { WorkflowLoader } from "../workflow/workflow-loader.js";
@@ -41,29 +51,46 @@ export class WorkflowRunner {
 
     await mkdir(join(abs, "data"), { recursive: true });
 
+    const startedAt = new Date().toISOString();
     const started = Date.now();
     let failedStep: string | null = null;
     let success = false;
     let exitCode = 1;
+    const stepLogs: StepLogRecord[] = [];
 
     try {
-      const result = await this.executeRunLoop(workflow, abs, fingerprint, options, logger);
+      const result = await this.executeRunLoop(
+        workflow,
+        abs,
+        fingerprint,
+        options,
+        logger,
+        stepLogs,
+      );
       exitCode = result.exitCode;
       failedStep = result.failedStep;
       success = exitCode === 0;
       return exitCode;
     } finally {
-      const duration = Date.now() - started;
+      const endedAt = new Date().toISOString();
+      const durationMs = Date.now() - started;
       try {
-        await this.historyRepo.append({
-          timestamp: new Date().toISOString(),
+        const history: HistoryRecord = {
+          timestamp: startedAt,
           workflowFingerprint: fingerprint,
           workflowPath: abs,
-          duration,
+          duration: durationMs,
           success,
           failedStep,
           logsPath: logger.logPath,
-        });
+          workflowName: workflow.name,
+          workflowVersion: workflow.version,
+          startedAt,
+          endedAt,
+          durationMs,
+          steps: stepLogs,
+        };
+        await this.historyRepo.append(history);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`Could not write history: ${msg}`);
@@ -77,6 +104,7 @@ export class WorkflowRunner {
     fingerprint: string,
     options: RunOptions,
     logger: ExecutionLogger,
+    stepLogs: StepLogRecord[],
   ): Promise<{ exitCode: number; failedStep: string | null }> {
     let state = await this.stateRepo.load();
 
@@ -146,19 +174,87 @@ export class WorkflowRunner {
       return { exitCode: 0, failedStep: null };
     }
 
-    for (const step of workflow.steps) {
-      const status = finalEntry.steps[step.id];
-      if (status === "success") {
-        const skipMsg = `Step "${step.id}" skipped (already successful).`;
-        logger.consoleInfo(skipMsg);
-        await logger.logMessage("INFO", skipMsg);
-        continue;
+    const graph = buildExecutionGraph(workflow);
+    const runtimeStatus = new Map<string, "pending" | "running" | "success" | "failed" | "skipped">();
+
+    for (const node of graph.steps) {
+      const stored = finalEntry.steps[node.id];
+      if (stored === "success") {
+        runtimeStatus.set(node.id, "success");
+      } else if (stored === "failed") {
+        runtimeStatus.set(node.id, "failed");
+      } else {
+        runtimeStatus.set(node.id, "pending");
+      }
+    }
+
+    let anyFailed = false;
+    let firstFailedStep: string | null = null;
+
+    while (true) {
+      if (anyFailed) {
+        break;
       }
 
-      const ok = await this.runStep(step, finalEntry, state, abs, options, logger);
-      if (!ok) {
-        return { exitCode: 1, failedStep: step.id };
+      const ready = graph.steps.filter((node) => {
+        const status = runtimeStatus.get(node.id);
+        if (status !== "pending") return false;
+        return node.dependsOn.every((dep) => runtimeStatus.get(dep) === "success");
+      });
+
+      if (ready.length === 0) {
+        const remainingPending = graph.steps.filter(
+          (n) => runtimeStatus.get(n.id) === "pending",
+        );
+        if (remainingPending.length > 0 && !anyFailed) {
+          logger.consoleError(
+            "No steps are ready but some remain pending; possible cycle or unsatisfied dependencies.",
+          );
+          await logger.logMessage(
+            "ERROR",
+            "No steps ready; terminating with error due to dependency issue",
+          );
+          return { exitCode: 1, failedStep: null };
+        }
+        break;
       }
+
+      await Promise.all(
+        ready.map(async (node) => {
+          if (anyFailed) return;
+          runtimeStatus.set(node.id, "running");
+          const result = await this.runStep(
+            workflow,
+            node.step,
+            finalEntry,
+            state,
+            abs,
+            options,
+            logger,
+            stepLogs,
+          );
+          if (!result.ok) {
+            anyFailed = true;
+            if (!firstFailedStep) {
+              firstFailedStep = node.id;
+            }
+          } else {
+            runtimeStatus.set(node.id, "success");
+          }
+        }),
+      );
+    }
+
+    if (anyFailed) {
+      for (const node of graph.steps) {
+        const status = runtimeStatus.get(node.id);
+        if (status === "pending") {
+          runtimeStatus.set(node.id, "skipped");
+          finalEntry.steps[node.id] = "failed";
+        }
+      }
+      await this.stateRepo.save(state);
+      return { exitCode: 1, failedStep: firstFailedStep };
     }
 
     const doneMsg = `Workflow "${workflow.name}" finished successfully.`;
@@ -169,64 +265,182 @@ export class WorkflowRunner {
   }
 
   private async runStep(
-    step: WorkflowDefinition["steps"][number],
+    workflow: WorkflowDefinition,
+    step: WorkflowStep,
     entry: WorkflowStateEntry,
     state: WorkflowsStateFile,
     cwd: string,
     options: RunOptions,
     logger: ExecutionLogger,
-  ): Promise<boolean> {
-    const t0 = Date.now();
+    stepLogs: StepLogRecord[],
+  ): Promise<{ ok: boolean }> {
+    const stepStart = Date.now();
+    const startedAt = new Date().toISOString();
     logger.consoleInfo(`Step "${step.id}" — ${step.description}`);
     await logger.logStepStart(step.id, step.description);
 
-    if (step.check !== undefined) {
-      await logger.logCommand(step.id, "check", step.check);
+    const variables = workflow.variables ?? {};
+    const interpolationCtx = { variables };
+
+    const whenOk = await evaluateWhen(step.when, {
+      cwd,
+      env: process.env,
+    });
+    if (!whenOk) {
+      const msg = `Step "${step.id}" skipped due to when="${step.when ?? ""}" condition.`;
+      logger.consoleInfo(msg);
+      await logger.logMessage("INFO", msg);
+      entry.steps[step.id] = "success";
+      await this.stateRepo.save(state);
+      const endedAt = new Date().toISOString();
+      const durationMs = Date.now() - stepStart;
+      stepLogs.push({
+        stepId: step.id,
+        startedAt,
+        endedAt,
+        durationMs,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        retry: 0,
+      });
+      await logger.logStepEnd(step.id, "skipped", durationMs);
+      return { ok: true };
+    }
+
+    const baseEnv = { ...process.env };
+    const stepEnvInterpolated = interpolateRecord(step.env, interpolationCtx);
+    const env: NodeJS.ProcessEnv = {
+      ...baseEnv,
+      ...(stepEnvInterpolated ?? {}),
+    };
+
+    const checkCmd = step.check ? interpolateString(step.check, interpolationCtx) : undefined;
+    const runCmd = interpolateString(step.run, interpolationCtx);
+
+    const executor = getExecutor(step.type ?? "shell");
+    const timeoutMs = step.timeout;
+    const maxRetries = step.retry ?? 0;
+
+    const aggregate = {
+      stdout: "",
+      stderr: "",
+      exitCode: 0 as number | null,
+      retry: 0,
+    };
+
+    const execCtxBase = {
+      cwd,
+      env,
+      logger,
+      stepId: step.id,
+      verbose: options.verbose,
+      timeoutMs,
+    } as const;
+
+    const runWithLogging = async (): Promise<boolean> => {
+      if (checkCmd && executor.check) {
+        await logger.logCommand(step.id, "check", checkCmd);
+        if (options.verbose) {
+          logger.consoleInfo(`$ ${checkCmd}`);
+        }
+        const checkResult = await executor.check(checkCmd, execCtxBase);
+        await logger.logExitCode(step.id, "check", checkResult.exitCode);
+        await logger.logStream(step.id, "stdout", checkResult.stdout);
+        await logger.logStream(step.id, "stderr", checkResult.stderr);
+        if (!checkResult.failed) {
+          const msg = `Step "${step.id}" satisfied by check; marking success without running main command.`;
+          logger.consoleInfo(msg);
+          await logger.logMessage("INFO", msg);
+          entry.steps[step.id] = "success";
+          await this.stateRepo.save(state);
+          aggregate.stdout += checkResult.stdout;
+          aggregate.stderr += checkResult.stderr;
+          aggregate.exitCode = checkResult.exitCode;
+          return true;
+        }
+        await logger.logMessage(
+          "INFO",
+          `Step "${step.id}" check did not pass; running main command.`,
+        );
+      }
+
+      await logger.logCommand(step.id, "run", runCmd);
       if (options.verbose) {
-        logger.consoleInfo(`$ ${step.check}`);
+        logger.consoleInfo(`$ ${runCmd}`);
       }
-      const checkResult = await execShell(step.check, { cwd, verbose: options.verbose });
-      await logger.logExitCode(step.id, "check", checkResult.exitCode);
-      await logger.logStream(step.id, "stdout", checkResult.stdout);
-      await logger.logStream(step.id, "stderr", checkResult.stderr);
-      if (!checkResult.failed) {
-        const msg = `Step "${step.id}" satisfied by check; marking success without running main command.`;
-        logger.consoleInfo(msg);
-        await logger.logMessage("INFO", msg);
-        entry.steps[step.id] = "success";
-        await this.stateRepo.save(state);
-        await logger.logStepEnd(step.id, "success", Date.now() - t0);
-        return true;
+      const runResult = await executor.run(runCmd, execCtxBase);
+      await logger.logExitCode(step.id, "run", runResult.exitCode);
+      await logger.logStream(step.id, "stdout", runResult.stdout);
+      await logger.logStream(step.id, "stderr", runResult.stderr);
+
+      aggregate.stdout += runResult.stdout;
+      aggregate.stderr += runResult.stderr;
+      aggregate.exitCode = runResult.exitCode;
+
+      if (runResult.failed) {
+        return false;
       }
-      await logger.logMessage("INFO", `Step "${step.id}" check did not pass; running main command.`);
+      return true;
+    };
+
+    let attempt = 0;
+    let ok = false;
+
+    while (attempt <= maxRetries) {
+      aggregate.retry = attempt;
+      ok = await runWithLogging();
+      if (ok) break;
+      attempt += 1;
+      if (attempt <= maxRetries) {
+        const msg = `Step "${step.id}" failed; retrying (${attempt}/${maxRetries}).`;
+        logger.consoleWarn(msg);
+        await logger.logMessage("WARN", msg);
+      }
     }
 
-    await logger.logCommand(step.id, "run", step.run);
-    if (options.verbose) {
-      logger.consoleInfo(`$ ${step.run}`);
-    }
-    const runResult = await execShell(step.run, { cwd, verbose: options.verbose });
-    await logger.logExitCode(step.id, "run", runResult.exitCode);
-    await logger.logStream(step.id, "stdout", runResult.stdout);
-    await logger.logStream(step.id, "stderr", runResult.stderr);
+    const durationMs = Date.now() - stepStart;
+    const endedAt = new Date().toISOString();
 
-    if (runResult.failed) {
+    if (!ok) {
       entry.steps[step.id] = "failed";
       await this.stateRepo.save(state);
-      const errMsg = `Step "${step.id}" failed with exit code ${String(runResult.exitCode)}.`;
+      const errMsg = `Step "${step.id}" failed with exit code ${String(aggregate.exitCode)}.`;
       logger.consoleError(errMsg);
-      if (!options.verbose && runResult.stderr.length > 0) {
-        logger.consoleError(runResult.stderr.trimEnd());
+      if (!options.verbose && aggregate.stderr.length > 0) {
+        logger.consoleError(aggregate.stderr.trimEnd());
       }
       await logger.logMessage("ERROR", errMsg);
-      await logger.logStepEnd(step.id, "failed", Date.now() - t0);
-      return false;
+      await logger.logStepEnd(step.id, "failed", durationMs);
+      stepLogs.push({
+        stepId: step.id,
+        startedAt,
+        endedAt,
+        durationMs,
+        stdout: aggregate.stdout,
+        stderr: aggregate.stderr,
+        exitCode: aggregate.exitCode,
+        retry: aggregate.retry,
+      });
+      return { ok: false };
     }
 
     entry.steps[step.id] = "success";
     await this.stateRepo.save(state);
     logger.consoleInfo(`Step "${step.id}" completed successfully.`);
-    await logger.logStepEnd(step.id, "success", Date.now() - t0);
-    return true;
+    await logger.logStepEnd(step.id, "success", durationMs);
+
+    stepLogs.push({
+      stepId: step.id,
+      startedAt,
+      endedAt,
+      durationMs,
+      stdout: aggregate.stdout,
+      stderr: aggregate.stderr,
+      exitCode: aggregate.exitCode,
+      retry: aggregate.retry,
+    });
+
+    return { ok: true };
   }
 }

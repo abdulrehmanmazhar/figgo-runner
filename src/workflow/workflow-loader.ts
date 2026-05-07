@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { WorkflowDefinition } from "../core/types.js";
+import type { WorkflowDefinition, WorkflowStep } from "../core/types.js";
 import { workflowDefinitionSchema } from "./schema.js";
 
 const WORKFLOW_FILE = "workflow.json";
@@ -37,16 +37,28 @@ export class WorkflowLoader {
       throw new Error(`Invalid workflow: ${msg}`);
     }
 
+    const variables = parsed.data.variables ?? {};
+
+    const steps: WorkflowStep[] = parsed.data.steps.map((s) => ({
+      id: s.id,
+      description: s.description,
+      run: s.run,
+      check: s.check,
+      type: s.type ?? "shell",
+      env: s.env,
+      dependsOn: s.dependsOn,
+      group: s.group,
+      retry: s.retry,
+      timeout: s.timeout,
+      when: s.when as WorkflowStep["when"],
+    }));
+
     return {
       name: parsed.data.name,
       version: parsed.data.version,
       description: parsed.data.description,
-      steps: parsed.data.steps.map((s) => ({
-        id: s.id,
-        description: s.description,
-        run: s.run,
-        check: s.check,
-      })),
+      variables,
+      steps,
     };
   }
 }

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
-import { cmdHistory, cmdInspect, cmdList } from "./cli/commands.js";
+import { cmdDoctor, cmdHistory, cmdInit, cmdInspect, cmdList } from "./cli/commands.js";
 import type { RunOptions } from "./core/types.js";
 import { WorkflowRunner } from "./core/workflow-runner.js";
 import { HistoryRepository } from "./storage/history-repository.js";
 import { StateRepository } from "./storage/state-repository.js";
 import { WorkflowFingerprintService } from "./workflow/workflow-fingerprint.js";
 import { WorkflowLoader } from "./workflow/workflow-loader.js";
+import { registerExecutor } from "./executors/registry.js";
+import { ShellExecutor } from "./executors/shell-executor.js";
 
 function parseRunOptions(argv: string[]): { rest: string[]; options: RunOptions } {
   const options: RunOptions = { reset: false, verbose: false, noPrompt: false };
@@ -34,10 +36,13 @@ function printUsage(): void {
   console.error("  figgo-runner inspect <workflowDir>");
   console.error("  figgo-runner list");
   console.error("  figgo-runner history");
+   console.error("  figgo-runner init");
+   console.error("  figgo-runner doctor");
 }
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  registerExecutor(new ShellExecutor());
   if (argv.length === 0) {
     printUsage();
     process.exit(2);
@@ -50,6 +55,16 @@ async function main(): Promise<void> {
   }
   if (command === "history") {
     await cmdHistory();
+    return;
+  }
+
+  if (command === "init") {
+    await cmdInit(process.cwd());
+    return;
+  }
+
+  if (command === "doctor") {
+    await cmdDoctor();
     return;
   }
 

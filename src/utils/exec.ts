@@ -7,34 +7,55 @@ export interface ExecShellResult {
   failed: boolean;
 }
 
+export interface ExecShellOptions {
+  cwd: string;
+  verbose: boolean;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  onStdoutChunk?: (chunk: string) => void;
+  onStderrChunk?: (chunk: string) => void;
+}
+
 export async function execShell(
   command: string,
-  options: { cwd: string; verbose: boolean },
+  options: ExecShellOptions,
 ): Promise<ExecShellResult> {
-  const result = await execa(command, {
+  const child = execa(command, {
     shell: true,
     cwd: options.cwd,
     reject: false,
+    env: options.env,
+    timeout: options.timeoutMs,
   });
 
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
+  let stdout = "";
+  let stderr = "";
 
-  if (options.verbose) {
-    if (stdout.length > 0) {
-      process.stdout.write(stdout);
-      if (!stdout.endsWith("\n")) {
-        process.stdout.write("\n");
+  if (child.stdout) {
+    child.stdout.on("data", (chunk: unknown) => {
+      const text = typeof chunk === "string" ? chunk : String(chunk);
+      stdout += text;
+      if (options.onStdoutChunk) {
+        options.onStdoutChunk(text);
+      } else if (options.verbose) {
+        process.stdout.write(text);
       }
-    }
-    if (stderr.length > 0) {
-      process.stderr.write(stderr);
-      if (!stderr.endsWith("\n")) {
-        process.stderr.write("\n");
-      }
-    }
+    });
   }
 
+  if (child.stderr) {
+    child.stderr.on("data", (chunk: unknown) => {
+      const text = typeof chunk === "string" ? chunk : String(chunk);
+      stderr += text;
+      if (options.onStderrChunk) {
+        options.onStderrChunk(text);
+      } else if (options.verbose) {
+        process.stderr.write(text);
+      }
+    });
+  }
+
+  const result = await child;
   const exitCode = result.exitCode ?? null;
   return {
     exitCode,
@@ -43,3 +64,4 @@ export async function execShell(
     failed: exitCode !== 0,
   };
 }
+
