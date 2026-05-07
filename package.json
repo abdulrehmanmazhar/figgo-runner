@@ -1,6 +1,6 @@
 {
   "name": "figgo-runner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local workflow automation engine with external workflow.json projects",
   "type": "module",
   "main": "dist/index.js",
@@ -11,7 +11,11 @@
     "build": "tsc",
     "start": "node dist/index.js"
   },
-  "keywords": ["cli", "workflow", "automation"],
+  "keywords": [
+    "cli",
+    "workflow",
+    "automation"
+  ],
   "author": "",
   "license": "ISC",
   "engines": {
