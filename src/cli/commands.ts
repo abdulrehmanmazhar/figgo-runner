@@ -69,6 +69,33 @@ export async function cmdInit(cwd: string): Promise<void> {
 
   await mkdir(scriptsDir, { recursive: true });
 
+  const setupSh = join(scriptsDir, "setup.sh");
+  const setupBat = join(scriptsDir, "setup.bat");
+
+  await writeFile(
+    setupSh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "./apps/$1"
+echo "Created app directory: ./apps/$1"
+`,
+    "utf8",
+  );
+
+  await writeFile(
+    setupBat,
+    `@echo off
+setlocal
+if "%~1"=="" (
+  echo Usage: setup.bat ^<appName^>
+  exit /b 1
+)
+if not exist ".\\apps\\%~1" mkdir ".\\apps\\%~1"
+echo Created app directory: .\\apps\\%~1
+`,
+    "utf8",
+  );
+
   const sampleWorkflow = {
     name: "Sample workflow",
     version: "1.0.0",
@@ -81,7 +108,7 @@ export async function cmdInit(cwd: string): Promise<void> {
         id: "setup",
         description: "Create app directory",
         type: "shell",
-        run: "mkdir -p ./apps/{{appName}}",
+        run: "bash ./scripts/setup.sh {{appName}}",
       },
     ],
   };
@@ -93,7 +120,8 @@ export async function cmdInit(cwd: string): Promise<void> {
 This directory contains a local figgo-runner workflow.
 
 - Edit \`workflow.json\` to define steps.
-- Put helper scripts under \`scripts/\`.
+- Put helper scripts under \`scripts/\` (use \`.sh\` on Unix/macOS and \`.bat\` on Windows).
+- Steps like \`bash ./scripts/setup.sh\` auto-resolve to \`setup.bat\` on Windows when present.
 
 Run:
 
@@ -125,7 +153,9 @@ export async function cmdDoctor(): Promise<void> {
     const bash = spawnSync("bash", ["-c", "echo"], { stdio: "ignore" });
     check("bash available", bash.status === 0);
   } else {
-    check("bash available", true, "skipped on Windows");
+    check("bash available", true, "optional on Windows (batch scripts used instead)");
+    const cmd = spawnSync("cmd.exe", ["/c", "echo test"], { stdio: "ignore" });
+    check("cmd.exe available", cmd.status === 0);
   }
 
   const docker = spawnSync("docker", ["version"], { stdio: "ignore" });

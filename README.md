@@ -102,7 +102,25 @@ my-workflow/
     ...
 ```
 
-Commands in `workflow.json` run with **cwd = workflow directory**, so `bash ./scripts/setup.sh` resolves correctly.
+Commands in `workflow.json` run with **cwd = workflow directory**.
+
+### Cross-platform scripts
+
+Put paired scripts under `scripts/` when you need OS-specific helpers:
+
+```text
+scripts/
+  setup.sh    # Unix / macOS / Git Bash
+  setup.bat   # Windows (cmd.exe)
+```
+
+Steps can reference the shell script; on Windows the runner automatically prefers the matching `.bat` or `.cmd` file when it exists:
+
+```json
+{ "run": "bash ./scripts/setup.sh" }
+```
+
+You can also invoke batch files directly (`scripts\\deploy.bat`) or use extensionless paths (`./scripts/setup`) — the runner resolves the correct file for the current platform.
 
 ## `init`
 

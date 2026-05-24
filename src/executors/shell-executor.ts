@@ -1,5 +1,6 @@
 import type { Executor, ExecutorContext, ExecutorResult } from "./types.js";
 import { execShell } from "../utils/exec.js";
+import { resolveScriptCommand } from "../utils/resolve-script-command.js";
 
 function prefixLines(text: string, prefix: string): string {
   if (text.length === 0) return "";
@@ -17,7 +18,12 @@ async function runCommand(
   const stepPrefix = `[${ctx.stepId}]`;
   const kindPrefix = `${stepPrefix} ${kind.toUpperCase()}`;
 
-  const result = await execShell(command, {
+  const resolvedCommand = await resolveScriptCommand(command, ctx.cwd);
+  if (resolvedCommand !== command) {
+    ctx.logger.consoleInfo(`[${ctx.stepId}] ${kind.toUpperCase()} resolved to: ${resolvedCommand}`);
+  }
+
+  const result = await execShell(resolvedCommand, {
     cwd: ctx.cwd,
     verbose: false,
     env: ctx.env,

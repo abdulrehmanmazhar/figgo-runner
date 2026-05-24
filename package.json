@@ -1,22 +1,37 @@
 {
   "name": "figgo-runner",
-  "version": "1.1.0",
-  "description": "Local workflow automation engine with external workflow.json projects",
+  "version": "1.2.0",
+  "description": "Local resumable workflow runner for infrastructure automation",
+  
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "figgo-runner": "./dist/index.js"
+  },
+
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abdurrahman/figgo-runner.git"
+  },
+  "homepage": "https://github.com/abdurrahman/figgo-runner",
+  "bugs": {
+    "url": "https://github.com/abdurrahman/figgo-runner/issues"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js"
   },
   "keywords": [
-    "cli",
     "workflow",
-    "automation"
+    "automation",
+    "devops",
+    "infrastructure",
+    "runner",
+    "deployment",
+    "shell",
+    "docker"
   ],
-  "author": "",
+  "author": "Abdur Rahman",
   "license": "ISC",
   "engines": {
     "node": ">=20"

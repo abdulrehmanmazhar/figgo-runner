@@ -20,8 +20,9 @@ export async function execShell(
   command: string,
   options: ExecShellOptions,
 ): Promise<ExecShellResult> {
+  const shell: boolean | string = process.platform === "win32" ? "cmd.exe" : true;
   const child = execa(command, {
-    shell: true,
+    shell,
     cwd: options.cwd,
     reject: false,
     env: options.env,
